@@ -1036,8 +1036,6 @@ def dataset_stats(path='coco128.yaml', autodownload=False, verbose=False, profil
     if verbose:
         print(json.dumps(stats, indent=2, sort_keys=False))
     return stats
-<<<<<<< HEAD
-=======
 
 def pyramid(image, scale=1.5, minSize=(30, 30)):
 	# yield the original image
@@ -1063,4 +1061,3 @@ def sliding_window(image, stepSize, windowSize):
 		for x in range(0, image.shape[1], stepSize):
 			# yield the current window
 			yield (x, y, image[y:y + windowSize[1], x:x + windowSize[0]])
->>>>>>> eab27b4
