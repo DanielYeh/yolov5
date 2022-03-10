@@ -9,6 +9,7 @@ import argparse
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
+import makeTXT as mtxt
 
 
 class Generator(tf.keras.utils.Sequence):
@@ -256,8 +257,10 @@ def find_contour(cnt_img, path, filename, imgsz, cnt):
         try:
             for c in contours:
                 x, y, w, h = cv2.boundingRect(c)
-                f.write(str(int(name_num)-1) + ' ' + str(x/imgsz) + ' ' + str(y/imgsz) 
-                        + ' ' + str(w/imgsz) + ' ' + str(h/imgsz) + '\n')
+                f.write('0' + ' ' + str(x/imgsz) + ' ' + str(y/imgsz) 
+                        + ' ' + str(w/imgsz) + ' ' + str(h/imgsz) + '\n') # for only one kind of blemish
+                # f.write(str(int(name_num)-1) + ' ' + str(x/imgsz) + ' ' + str(y/imgsz) 
+                #         + ' ' + str(w/imgsz) + ' ' + str(h/imgsz) + '\n')
         except:
             print('Fail in contour')
     f.close()
@@ -326,7 +329,14 @@ if __name__ == '__main__':
     # define the window width and height
     (winW, winH) = (320, 320)
     COUNT = 0
-    
+
+    # create folder if not exists
+    folders = ['images', 'labels', 'contours', 'tmp/images', 'tmp/contours']
+    for folder in folders:
+        if not os.path.exists(path + '/' + folder):
+            os.makedirs(path + '/' + folder)
+        # os.mkdir(os.path.join(path,folders))
+
     for file in glob.glob(path + '/origin_img/*.png'):
         filename = os.path.splitext(os.path.split(file)[1])[0]
         image = cv2.imread(path + "/origin_img/" + filename + ".png")
@@ -356,6 +366,7 @@ if __name__ == '__main__':
                 
                 # find contour and save image
                 find_contour(cnt, path, filename, winW, COUNT)
+                print("Processing pyramid and sliding window: {}".format(COUNT))
                 cv2.imwrite(path + "/tmp/images/blemish_" + str(COUNT) + ".png", window)
                 cv2.imwrite(path + "/tmp/contours/blemish_" + str(COUNT) + ".png", cnt)
                 COUNT += 1
@@ -363,15 +374,12 @@ if __name__ == '__main__':
         # Generate augmentation object
         train_generator = Generator(path + "/tmp/images/", path + "/tmp/contours/", path + "/labels/",
                                     BATCH_SIZE=10, n_class=2, image_size=(winW, winH))
-
-        print(len(train_generator))
         
         for i in range(0, len(train_generator)):
             image_batch, cnt_batch, label_batch = train_generator.__getitem__(i)
-            print("Processing {}, batch {} / {}".format(filename, i, len(train_generator)))
-            print(image_batch.shape)
-            print(cnt_batch.shape)
-            print(len(label_batch))
+            print("Processing {}, batch {} / {}".format(filename, str(int(i)+1), len(train_generator)))
+            print("image_batch.shape:   {}".format(image_batch.shape))
+            print("contour_batch.shape: {}".format(cnt_batch.shape))
 
             for i in range(0, len(image_batch)):
                 # find_contour(cnt_batch[i], path, filename, winW, COUNT)
@@ -392,3 +400,6 @@ if __name__ == '__main__':
             shutil.move(file, path + "/contours/")
         
         print("Done: {}".format(filename))
+    
+    # create train.txt and val.txt
+    mtxt.makeTXT(path + "/images/", path)
