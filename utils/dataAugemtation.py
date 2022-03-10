@@ -1,3 +1,16 @@
+'''
+Generate dataset for training
+Include the following steps:
+    1. find ROI and crop the image
+    2. apply pyramid and sliding window for each image
+    3. generate augmentation object
+    4. create train/val txt file
+
+Usage:
+    Put your origin images in the folder 'PATH/origin_img'
+    $ python path/to/dataAugemtation.py -p ../datasets/blemish
+'''
+
 import os
 import cv2
 import time
