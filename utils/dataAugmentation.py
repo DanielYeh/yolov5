@@ -260,20 +260,20 @@ def find_contour(cnt_img, path, filename, imgsz, cnt):
         print("Error: Could not find any contours in image")
     
     name_num = ''.join([i for i in filename if i.isdigit()])
+    name_num = int(name_num) % 4
+    if name_num == 0: name_num = 4
     
-    classname = 'remap_dummy_' + str(int(name_num) % 4) + 'p'
-    if classname == 'remap_dummy_0p':
-        classname = 'remap_dummy_4p'
+    classname = 'remap_dummy_' + str(name_num) + 'p'
 
     # return yolo format txt file (x, y, width, height) in normalized
     with open(path + '/labels/' + 'blemish_' + str(cnt)+ '.txt', 'w') as f:
         try:
             for c in contours:
                 x, y, w, h = cv2.boundingRect(c)
-                f.write('0' + ' ' + str(x/imgsz) + ' ' + str(y/imgsz) 
-                        + ' ' + str(w/imgsz) + ' ' + str(h/imgsz) + '\n') # for only one kind of blemish
-                # f.write(str(int(name_num)-1) + ' ' + str(x/imgsz) + ' ' + str(y/imgsz) 
-                #         + ' ' + str(w/imgsz) + ' ' + str(h/imgsz) + '\n')
+                # f.write('0' + ' ' + str(x/imgsz) + ' ' + str(y/imgsz) 
+                #         + ' ' + str(w/imgsz) + ' ' + str(h/imgsz) + '\n') # for only one kind of blemish
+                f.write(str(int(name_num)-1) + ' ' + str(x/imgsz) + ' ' + str(y/imgsz) 
+                        + ' ' + str(w/imgsz) + ' ' + str(h/imgsz) + '\n')
         except:
             print('Fail in contour')
     f.close()
@@ -335,7 +335,7 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument("-i", "--image", default=r'.\data\images\remap_dummy_4p_l.png', help="Path to the image")
     ap.add_argument("-c", "--contour", default=r'.\data\images\blm_contour_l_remap_dummy_4p.jpg', help="Path to the contour image")
-    ap.add_argument("-p", "--path", default=r"../datasets/blemish", help="Path to the dataset folder")
+    ap.add_argument("-p", "--path", default=r"..\datasets\blemish_4class", help="Path to the dataset folder")
     args = vars(ap.parse_args())
     path = args["path"]
 
@@ -350,6 +350,7 @@ if __name__ == '__main__':
             os.makedirs(path + '/' + folder)
         # os.mkdir(os.path.join(path,folders))
 
+    # loop over the image folder
     for file in glob.glob(path + '/origin_img/*.png'):
         filename = os.path.splitext(os.path.split(file)[1])[0]
         image = cv2.imread(path + "/origin_img/" + filename + ".png")
@@ -369,20 +370,20 @@ if __name__ == '__main__':
             exit()
 
         # loop over the image pyramid
-        for resized, contour in pyramid(image, contourImg, scale=1.5):
-            # loop over the sliding window for each layer of the pyramid
-            for (x, y, window, cnt) in sliding_window(resized, contour, stepSize=int(winW*0.75), 
-                                                    windowSize=(winW, winH)):
-                # if the window does not meet our desired window size, ignore it
-                if window.shape[0] != winH or window.shape[1] != winW:
-                    continue
-                
-                # find contour and save image
-                find_contour(cnt, path, filename, winW, COUNT)
-                print("Processing pyramid and sliding window: {}".format(COUNT))
-                cv2.imwrite(path + "/tmp/images/blemish_" + str(COUNT) + ".png", window)
-                cv2.imwrite(path + "/tmp/contours/blemish_" + str(COUNT) + ".png", cnt)
-                COUNT += 1
+        # for resized, contour in pyramid(image, contourImg, scale=1.5):
+        # loop over the sliding window for each layer of the pyramid
+        for (x, y, window, cnt) in sliding_window(image, contourImg, stepSize=int(winW*0.75), 
+                                                windowSize=(winW, winH)):
+            # if the window does not meet our desired window size, ignore it
+            if window.shape[0] != winH or window.shape[1] != winW:
+                continue
+            
+            # find contour and save image
+            find_contour(cnt, path, filename, winW, COUNT)
+            print("Processing pyramid and sliding window: {}".format(COUNT))
+            cv2.imwrite(path + "/tmp/images/blemish_" + str(COUNT) + ".png", window)
+            cv2.imwrite(path + "/tmp/contours/blemish_" + str(COUNT) + ".png", cnt)
+            COUNT += 1
 
         # Generate augmentation object
         train_generator = Generator(path + "/tmp/images/", path + "/tmp/contours/", path + "/labels/",
