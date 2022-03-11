@@ -222,7 +222,8 @@ class LoadImages:
             s = f'image {self.count}/{self.nf} {path}: '
 
         # Padded resize
-        img = letterbox(img0, self.img_size, stride=self.stride, auto=self.auto)[0]
+        # img = letterbox(img0, self.img_size, stride=self.stride, auto=self.auto)[0]
+        img = img0.copy()
 
         # Convert
         img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB

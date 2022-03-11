@@ -22,7 +22,7 @@ import argparse
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
-import makeTXT as mtxt
+import utils.makeTXT as mtxt
 
 
 class Generator(tf.keras.utils.Sequence):
@@ -370,20 +370,20 @@ if __name__ == '__main__':
             exit()
 
         # loop over the image pyramid
-        # for resized, contour in pyramid(image, contourImg, scale=1.5):
+        for resized, contour in pyramid(image, contourImg, scale=1.5):
         # loop over the sliding window for each layer of the pyramid
-        for (x, y, window, cnt) in sliding_window(image, contourImg, stepSize=int(winW*0.75), 
-                                                windowSize=(winW, winH)):
-            # if the window does not meet our desired window size, ignore it
-            if window.shape[0] != winH or window.shape[1] != winW:
-                continue
-            
-            # find contour and save image
-            find_contour(cnt, path, filename, winW, COUNT)
-            print("Processing pyramid and sliding window: {}".format(COUNT))
-            cv2.imwrite(path + "/tmp/images/blemish_" + str(COUNT) + ".png", window)
-            cv2.imwrite(path + "/tmp/contours/blemish_" + str(COUNT) + ".png", cnt)
-            COUNT += 1
+            for (x, y, window, cnt) in sliding_window(image, contourImg, stepSize=int(winW*0.75), 
+                                                    windowSize=(winW, winH)):
+                # if the window does not meet our desired window size, ignore it
+                if window.shape[0] != winH or window.shape[1] != winW:
+                    continue
+                
+                # find contour and save image
+                find_contour(cnt, path, filename, winW, COUNT)
+                print("Processing pyramid and sliding window: {}".format(COUNT))
+                cv2.imwrite(path + "/tmp/images/blemish_" + str(COUNT) + ".png", window)
+                cv2.imwrite(path + "/tmp/contours/blemish_" + str(COUNT) + ".png", cnt)
+                COUNT += 1
 
         # Generate augmentation object
         train_generator = Generator(path + "/tmp/images/", path + "/tmp/contours/", path + "/labels/",
