@@ -30,6 +30,8 @@ import sys
 from pathlib import Path
 
 import cv2
+import math
+import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
 
@@ -41,7 +43,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.common import DetectMultiBackend
 from utils.datasets import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
-from utils.general import (LOGGER, check_file, check_img_size, check_imshow, check_requirements, colorstr,
+from utils.general import (LOGGER, check_file, check_img_size, check_imshow, check_requirements, colorstr, NMS,
                            increment_path, non_max_suppression, print_args, scale_coords, strip_optimizer, xyxy2xywh)
 from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, time_sync
@@ -65,7 +67,7 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
         view_img=False,  # show results
         save_txt=True,  # save results to *.txt
-        save_conf=False,  # save confidences in --save-txt labels
+        save_conf=True,  # save confidences in --save-txt labels
         save_crop=True,  # save cropped prediction boxes
         nosave=False,  # do not save images/videos
         classes=None,  # filter by class: --class 0, or --class 0 2 3
@@ -117,110 +119,172 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
     vid_path, vid_writer = [None] * bs, [None] * bs
 
     # Run inference
+    imgs = []  # Stores image paths
+    img_detections = []  # Stores detections for each image index
     model.warmup(imgsz=(1 if pt else bs, 3, *imgsz), half=half)  # warmup
     dt, seen = [0.0, 0.0, 0.0], 0
     for path, img, img0s, vid_cap, s in dataset:
-        for (x, y, im, im0s) in sliding_window(img, img0s, stepSize=int(imgsz[0]*0.75), 
-                                               windowSize=imgsz):
-            if im0s.shape[0] != imgsz[0] or im0s.shape[1] != imgsz[1]:
-                continue
-            
-            t1 = time_sync()
-            im = torch.from_numpy(im).to(device)
-            im = im.half() if half else im.float()  # uint8 to fp16/32
-            im /= 255  # 0 - 255 to 0.0 - 1.0
-            if len(im.shape) == 3:
-                im = im[None]  # expand for batch dim
-            t2 = time_sync()
-            dt[0] += t2 - t1
+        nms_buffers = []
+        # for (x, y, im, im0s) in sliding_window(img, img0s, stepSize=int(imgsz[0]*0.75), 
+                                            #    windowSize=imgsz):
+            # if im0s.shape[0] != imgsz[0] or im0s.shape[1] != imgsz[1]:
+            #     continue
 
-            # Inference
-            visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
-            pred = model(im, augment=augment, visualize=visualize)
-            t3 = time_sync()
-            dt[1] += t3 - t2
+        preds = []
+        length = imgsz[0]
+        ni = int(math.ceil(img.shape[1] / length))  # up-down
+        nj = int(math.ceil(img.shape[2] / length))  # left-right
+        for i in range(ni): # for i in range(ni - 1):
+            print('row %g/%g: ' % (i, ni), end='')
 
-            # NMS
-            pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
-            dt[2] += time_sync() - t3
+            for j in range(nj):  # for j in range(nj if i==0 else nj - 1):
+                print('%g ' % j, end='', flush=True)
+                # forward scan
+                y2 = min((i + 1) * length, img.shape[1])
+                y1 = y2 - length
+                x2 = min((j + 1) * length, img.shape[2])
+                x1 = x2 - length
 
-            # Second-stage classifier (optional)
-            # pred = utils.general.apply_classifier(pred, classifier_model, im, im0s)
+                t1 = time_sync()
 
-            # Process predictions
-            for i, det in enumerate(pred):  # per image
-                seen += 1
-                if webcam:  # batch_size >= 1
-                    p, im0, frame = path[i], im0s[i].copy(), dataset.count
-                    s += f'{i}: '
-                else:
-                    p, im0, frame = path, im0s.copy(), getattr(dataset, 'frame', 0)
+                # Get detections
+                with torch.no_grad():
+                    # Normal orientation
+                    chip = torch.from_numpy(img[:, y1:y2, x1:x2]).unsqueeze(0).to(device)
+                    
+                    chip = chip.half() if half else chip.float()  # uint8 to fp16/32
+                    chip /= 255  # 0 - 255 to 0.0 - 1.0
+                    if len(chip.shape) == 3:
+                        chip = chip[None]  # expand for batch dim
+                    
+                    t2 = time_sync()
+                    dt[0] += t2 - t1
+                    
+                    visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
 
-                p = Path(p)  # to Path
-                pa, pb = p.name.split('.')
-                p_name = pa + '_' + str(y) + '_' + str(x) + '.' + pb
-                save_path = str(save_dir / p_name)  # im.jpg
-                p_stem = p.stem + '_' + str(y) + '_' + str(x)
-                txt_path = str(save_dir / 'labels' / p_stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # im.txt
-                s += '%gx%g ' % im.shape[2:]  # print string
-                gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
-                imc = im0.copy() if save_crop else im0  # for save_crop
-                annotator = Annotator(im0, line_width=line_thickness, example=str(names))
-                if len(det):
-                    # Rescale boxes from img_size to im0 size
-                    det[:, :4] = scale_coords(im.shape[2:], det[:, :4], im0.shape).round()
+                    pred = model(chip, augment=augment, visualize=visualize)
 
-                    # Print results
-                    for c in det[:, -1].unique():
-                        n = (det[:, -1] == c).sum()  # detections per class
-                        s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
+                    t3 = time_sync()
+                    dt[1] += t3 - t2
+                    
+                    # if (j > 0) & (len(pred) > 0):
+                    #     pred = pred[(pred[:, 0] - pred[:, 2] / 2 > 2)]  # near left border
+                    # if (j < nj) & (len(pred) > 0):
+                    #     pred = pred[(pred[:, 0] + pred[:, 2] / 2 < 606)]  # near right border
+                    # if (i > 0) & (len(pred) > 0):
+                    #     pred = pred[(pred[:, 1] - pred[:, 3] / 2 > 2)]  # near top border
+                    # if (i < ni) & (len(pred) > 0):
+                    #     pred = pred[(pred[:, 1] + pred[:, 3] / 2 < 606)]  # near bottom border
 
-                    # Write results
-                    for *xyxy, conf, cls in reversed(det):
-                        if save_txt:  # Write to file
-                            xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                            line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
-                            with open(txt_path + '.txt', 'a') as f:
-                                f.write(('%g ' * len(line)).rstrip() % line + '\n')
-
-                        if save_img or save_crop or view_img:  # Add bbox to image
-                            c = int(cls)  # integer class
-                            label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
-                            annotator.box_label(xyxy, label, color=colors(c, True))
-                            if save_crop:
-                                save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
-
-                # Stream results
-                im0 = annotator.result()
-                if view_img:
-                    cv2.imshow(str(p), im0)
-                    cv2.waitKey(1)  # 1 millisecond
-
-                # Save results (image with detections)
-                if save_img:
-                    if dataset.mode == 'image':
-                        cv2.imwrite(save_path, im0)
-                    else:  # 'video' or 'stream'
-                        if vid_path[i] != save_path:  # new video
-                            vid_path[i] = save_path
-                            if isinstance(vid_writer[i], cv2.VideoWriter):
-                                vid_writer[i].release()  # release previous video writer
-                            if vid_cap:  # video
-                                fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                                w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                                h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                            else:  # stream
-                                fps, w, h = 30, im0.shape[1], im0.shape[0]
-                            save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
-                            vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                        vid_writer[i].write(im0)
-
-        # Merge sliding windows into one image and do NMS
-        # Merge
+                    if len(pred) > 0:
+                        pred[:, 0] += x1
+                        pred[:, 1] += y1
+                        preds.append(pred.unsqueeze(0))
 
         # NMS
+        if len(preds) > 0:
+            pred = non_max_suppression(torch.cat(preds, 1)[0], conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
+            img_detections.extend(pred)
+            imgs.extend(path)
+            dt[2] += time_sync() - t3
+
+        # Second-stage classifier (optional)
+        # pred = utils.general.apply_classifier(pred, classifier_model, im, im0s)
+
+        # Process predictions
+        for i, det in enumerate(pred):  # per image
+            seen += 1
+            if webcam:  # batch_size >= 1
+                p, im0, frame = path[i], img0s[i].copy(), dataset.count
+                s += f'{i}: '
+            else:
+                p, im0, frame = path, img0s.copy(), getattr(dataset, 'frame', 0)
+
+            p = Path(p)  # to Path
+            save_path = str(save_dir / p.name)  # im.jpg
+            txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # im.txt
+            s += '%gx%g ' % img.shape[1:]  # print string
+            gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+            imc = im0.copy() if save_crop else im0  # for save_crop
+            annotator = Annotator(im0, line_width=line_thickness, example=str(names))
+            if len(det):
+                # Rescale boxes from img_size to im0 size
+                det[:, :4] = scale_coords(im0.shape[0:2], det[:, :4], im0.shape).round()
+
+                # Print results
+                for c in det[:, -1].unique():
+                    n = (det[:, -1] == c).sum()  # detections per class
+                    s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
+
+                # Write results
+                for *xyxy, conf, cls in reversed(det):
+                    if save_txt:  # Write to file
+                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                        # xywh_deNormalized = [i * imgsz[0] for i in xywh]
+                        line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
+                        # xx = x + xywh_deNormalized[0]
+                        # yy = y + xywh_deNormalized[1]
+                        # ww = xywh_deNormalized[2]
+                        # hh = xywh_deNormalized[3]
+                        # conf_float = round(float(conf),4)
+                        # nms_buffers.append([int(line[0]), xx, yy, ww, hh, conf_float])
+                        with open(txt_path + '.txt', 'a') as f:
+                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
+
+                    if save_img or save_crop or view_img:  # Add bbox to image
+                        c = int(cls)  # integer class
+                        label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
+                        annotator.box_label(xyxy, label, color=colors(c, True))
+                        if save_crop:
+                            save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
+
+            # Stream results
+            im0 = annotator.result()
+            if view_img:
+                cv2.imshow(str(p), im0)
+                cv2.waitKey(1)  # 1 millisecond
+
+            # Save results (image with detections)
+            if save_img:
+                if dataset.mode == 'image':
+                    cv2.imwrite(save_path, im0)
+                else:  # 'video' or 'stream'
+                    if vid_path[i] != save_path:  # new video
+                        vid_path[i] = save_path
+                        if isinstance(vid_writer[i], cv2.VideoWriter):
+                            vid_writer[i].release()  # release previous video writer
+                        if vid_cap:  # video
+                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
+                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        else:  # stream
+                            fps, w, h = 30, im0.shape[1], im0.shape[0]
+                        save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
+                        vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                    vid_writer[i].write(im0)
+
+        # Merge sliding windows into one image and do NMS
+        # NMS
+        im0_s = np.zeros_like(im0)
+        nms_box = NMS(np.array(nms_buffers))        
+
+        cv2.drawContours(im0_s, nms_box, -1, (0, 255, 0), 2)
+        for i, (nms_buffer, save_path) in enumerate(zip(nms_buffers, path)):
+            if len(nms_buffer):
+                nms_buffer = np.array(nms_buffer)
+                nms_buffer = non_max_suppression(nms_buffer, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
+                for *xyxy, conf, cls in nms_buffer:
+                    xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
 
         # Save results (image with detections)
+        if save_txt:
+            aa = 0
+        if save_img:  # Add bbox to image
+            c = int(cls)  # integer class
+            label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
+            annotator.box_label(xyxy, label, color=colors(c, True))
+            if save_crop:
+                save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
 
         # Print time (inference-only)
         LOGGER.info(f'{s}Done. ({t3 - t2:.3f}s)')
@@ -238,8 +302,8 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
 def parse_opt():
     parser = argparse.ArgumentParser()
     # parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolov5s.pt', help='model path(s)')
-    parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'runs/train/exp18/weights/best.pt', help='model path(s)')
-    parser.add_argument('--source', type=str, default=ROOT / '../datasets/blemish/aa/', help='file/dir/URL/glob, 0 for webcam')
+    parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'runs/train/exp22/weights/best.pt', help='model path(s)')
+    parser.add_argument('--source', type=str, default=ROOT / '../datasets/blemish_4class/4p/', help='file/dir/URL/glob, 0 for webcam')
     parser.add_argument('--data', type=str, default=ROOT / 'data/blemish.yaml', help='(optional) dataset.yaml path')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[320], help='inference size h,w')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
@@ -248,7 +312,7 @@ def parse_opt():
     parser.add_argument('--device', default='cpu', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='show results')
     parser.add_argument('--save-txt', default=True, action='store_true', help='save results to *.txt')
-    parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
+    parser.add_argument('--save-conf', default=True, action='store_true', help='save confidences in --save-txt labels')
     parser.add_argument('--save-crop', action='store_true', help='save cropped prediction boxes')
     parser.add_argument('--nosave', action='store_true', help='do not save images/videos')
     parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --classes 0, or --classes 0 2 3')
